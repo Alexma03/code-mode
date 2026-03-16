@@ -1,6 +1,23 @@
 import { UtcpClient, Tool, JsonSchema, UtcpClientConfig } from '@utcp/sdk';
 import ivm from 'isolated-vm';
 
+const RECOMMENDED_NODE_VERSION = '24.14.0';
+
+function getRuntimeCompatibilityHint(): string | null {
+  const nodeVersion = process.versions.node;
+  const nodeMajor = Number.parseInt(nodeVersion.split('.')[0] ?? '', 10);
+
+  if (Number.isNaN(nodeMajor) || nodeMajor < 25) {
+    return null;
+  }
+
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    return `Detected Node ${nodeVersion} on ${process.platform}-${process.arch}. isolated-vm is known to crash on this combination. Use Node ${RECOMMENDED_NODE_VERSION}.`;
+  }
+
+  return `Detected Node ${nodeVersion}. This fork is pinned to Node ${RECOMMENDED_NODE_VERSION} for reproducible isolated-vm behavior.`;
+}
+
 /**
  * CodeModeUtcpClient extends UtcpClient to provide TypeScript code execution capabilities.
  * This allows executing TypeScript code that can directly call registered tools as functions.
@@ -21,6 +38,7 @@ You have access to a CodeModeUtcpClient that allows you to execute TypeScript co
 **Always start by discovering available tools:**
 - Tools are organized by manual namespace (e.g., \`manual_name.tool_name\`)
 - Use hierarchical access patterns: \`manual.tool({ param: value })\` (synchronous, no await)
+- If you see examples like \`await manual.tool({ param: value })\`, note that this runtime exposes tools synchronously and you should call \`manual.tool({ param: value })\` directly
 - Multiple manuals can contain tools with the same name - namespaces prevent conflicts
 
 ### 2. Interface Introspection
@@ -184,11 +202,10 @@ ${interfaces.join('\n\n')}`;
   ): Promise<{result: any, logs: string[]}> {
     const tools = await this.getTools();
     const logs: string[] = [];
-    
-    // Create isolated VM
-    const isolate = new ivm.Isolate({ memoryLimit });
+    let isolate: ivm.Isolate | null = null;
     
     try {
+      isolate = new ivm.Isolate({ memoryLimit });
       const context = await isolate.createContext();
       const jail = context.global;
       
@@ -226,12 +243,13 @@ ${interfaces.join('\n\n')}`;
       return { result, logs };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const runtimeHint = getRuntimeCompatibilityHint();
       return { 
         result: null, 
-        logs: [...logs, `[ERROR] Code execution failed: ${errorMessage}`] 
+        logs: [...logs, `[ERROR] Code execution failed: ${runtimeHint ? `${errorMessage} ${runtimeHint}` : errorMessage}`] 
       };
     } finally {
-      isolate.dispose();
+      isolate?.dispose();
     }
   }
 

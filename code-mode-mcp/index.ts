@@ -43,8 +43,45 @@ console.warn = (...args: any[]) => { process.stderr.write(util.format(...args) +
 ensureCorePluginsInitialized();
 
 let utcpClient: CodeModeUtcpClient | null = null;
+const RECOMMENDED_NODE_VERSION = "24.14.0";
+
+function getUnsupportedRuntimeMessage(): string | null {
+    const nodeVersion = process.versions.node;
+    const nodeMajor = Number.parseInt(nodeVersion.split(".")[0] ?? "", 10);
+
+    if (Number.isNaN(nodeMajor)) {
+        return null;
+    }
+
+    if (process.platform === "darwin" && process.arch === "arm64" && nodeMajor >= 25) {
+        return [
+            `Unsupported runtime detected: Node ${nodeVersion} on ${process.platform}-${process.arch}.`,
+            "This fork relies on isolated-vm prebuilds that are known to fail under Node 25+ on macOS arm64.",
+            `Use Node ${RECOMMENDED_NODE_VERSION} and relaunch the MCP bridge.`,
+            "If this bridge is started by an MCP client, point it at an absolute Node 24 binary."
+        ].join(" ");
+    }
+
+    if (nodeMajor >= 25) {
+        return [
+            `Unsupported runtime detected: Node ${nodeVersion}.`,
+            `This fork is currently pinned to Node ${RECOMMENDED_NODE_VERSION} for reproducible isolated-vm behavior.`,
+            `Use Node ${RECOMMENDED_NODE_VERSION} and relaunch the MCP bridge.`
+        ].join(" ");
+    }
+
+    return null;
+}
+
+function assertSupportedRuntime() {
+    const runtimeMessage = getUnsupportedRuntimeMessage();
+    if (runtimeMessage) {
+        throw new Error(runtimeMessage);
+    }
+}
 
 async function main() {
+    assertSupportedRuntime();
     setupMcpTools();
     utcpClient = await initializeUtcpClient();
     const transport = new StdioServerTransport();
@@ -364,7 +401,9 @@ async function initializeUtcpClient(): Promise<CodeModeUtcpClient> {
 
     const clientConfig = new UtcpClientConfigSerializer().validateDict(rawConfig);
 
-    const newClient = await CodeModeUtcpClient.create(scriptDir, clientConfig);
+    const baseClient = await UtcpClient.create(scriptDir, clientConfig);
+    const newClient = Object.setPrototypeOf(baseClient, CodeModeUtcpClient.prototype) as CodeModeUtcpClient;
+    (newClient as any).toolFunctionCache = new Map();
 
     utcpClient = newClient;
     return utcpClient;
